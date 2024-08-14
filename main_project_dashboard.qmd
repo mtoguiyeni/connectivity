@@ -1,0 +1,336 @@
+--- 
+title: "Connectivity in the world"
+author: "Seydou TOGUIYENI"
+format: 
+  dashboard:
+    logo: images/itu_logo.png
+theme: lux
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+# Load packages 
+if(!require(pacman)) install.packages("pacman")
+pacman::p_load(tidyverse, here, janitor, sf, bslib, shiny, bsicons, gganimate,
+               rnaturalearth, countrycode, rlang,  plotly, highcharter,
+               htmltools, reactable
+               )
+```
+
+
+```{r}
+# loading data & Data cleanning
+
+cellUser <- read_csv(here("data/cell_phones_total.csv")) %>% # 2000 - 2022
+  select(-c("1960": "1999")) %>% 
+  pivot_longer(cols = c("2000" : "2022"), 
+               names_to = "year", values_to = "cell_total") %>% 
+  mutate(cell_total = as.numeric(str_replace_all(cell_total, c("k"="e3", "M" = "e6"))))
+
+cellPercent <- read_csv(here("data/cell_phones_per_100_people.csv")) %>% # 2000 - 2022
+  select(-c("1960": "1999")) %>% 
+  pivot_longer(cols = c("2000" : "2022"), 
+               names_to = "year", values_to = "cell_percent")
+
+phone <- cellUser %>% 
+                    left_join(cellPercent, by = c("country", "year"))
+
+internetUser <- read_csv(here("data/net_users_num.csv")) %>% # 2000 - 2019
+  select(-c("1990": "1999")) %>% 
+   pivot_longer(cols = c("2000" : "2019"), 
+               names_to = "year", values_to = "internet_total") %>% 
+  mutate(internet_total = as.numeric(str_replace_all(internet_total, c("k"="e3", "M" = "e6"))))
+
+internetPercent <- read_csv(here("data/internet_users_per_100_people.csv")) %>% # 2000 - 2022
+  select(-c("1960": "1999")) %>% 
+  pivot_longer(cols = c("2000" : "2022"), 
+               names_to = "year", values_to = "internet_percent")
+
+# internetUser dispose de donnes de la Taiwan qui ne sont pas dans internetPercent
+internet <- left_join(internetPercent, internetUser, by = c("country", "year"))
+```
+
+
+```{r}
+# recuperation des codes iso3 des pays
+phone_iso <- phone %>% 
+  filter(country != "Kosovo") %>% # kosovo n'a pas de code iso3
+  mutate(country_code = countrycode(country, "country.name", "iso3c")) 
+  
+internet_iso <- internet %>% 
+  filter(country != "Kosovo") %>% # kosovo n'a pas de code iso3
+  mutate(country_code = countrycode(country, "country.name", "iso3c"))
+
+df <- phone_iso %>% 
+        filter(country_code != "SXM") %>% 
+        left_join(internet_iso, by = c("country_code", "year")) %>% 
+        select(-country.y) %>%
+        rename(country = country.x) %>% 
+        select(country_code, everything()) %>% 
+        mutate(year = as.numeric(year)) %>% 
+        mutate(continent = countrycode(country_code, "iso3c", "continent")) 
+ 
+```
+
+```{r}
+
+format_number <- function(x) {
+  if (x >= 1e9) {
+    return(paste0(round(x / 1e9, 1), "B"))  # Milliards
+  } else if (x >= 1e6) {
+    return(paste0(round(x / 1e6, 1), "M"))  # Millions
+  } else if (x >= 1e3) {
+    return(paste0(round(x / 1e3, 1), "K"))  # Milliers
+  } else {
+    return(as.character(x))  # Moins de 1000
+  }
+}
+
+most_recent_year <- df %>%
+  filter(year == max(year, na.rm = TRUE))
+
+# value_box 1 : most_recent_cell_user
+total_cell_users <- sum(most_recent_year$cell_total, na.rm = TRUE)
+max_cell_users <- most_recent_year %>%
+  filter(cell_total == max(cell_total, na.rm = TRUE)) %>%
+  select(country, cell_total) %>%
+  slice(1)
+
+# value_box 2 : % cell_percent
+
+# Filter for the last 5 years
+last_5_years <- df %>%
+  filter(year >= (max(year, na.rm = TRUE) - 4))
+
+# Calculate the average percentage for the most recent year
+average_percent_recent_cell <- mean(most_recent_year$cell_percent, na.rm = TRUE)
+
+# Calculate the average percentage for the last 5 years
+average_percent_last_5_years <- last_5_years %>%
+  group_by(year) %>%
+  summarise(avg_percent = mean(cell_percent, na.rm = TRUE)) %>%
+  summarise(variation = last(avg_percent) - first(avg_percent))
+
+# Identify the country with the highest percentage
+max_percent_country <- most_recent_year %>%
+  filter(cell_percent == max(cell_percent, na.rm = TRUE)) %>%
+  select(country, cell_percent) %>%
+  slice(1)
+
+```
+
+
+```{r}
+# value_box 3 : most_recent_internet_user
+most_recent_year_totIn <- df %>%
+  filter(year == 2019)
+
+total_internet_users <- sum(most_recent_year_totIn$internet_total, na.rm = TRUE)
+max_internet_users <- most_recent_year_totIn %>%
+  filter(internet_total == max(internet_total, na.rm = TRUE)) %>%
+  select(country, internet_total) %>%
+  slice(1)
+
+# value_box 4
+
+# Calculate the average percentage for the most recent year
+average_percent_recent_internet <- mean(most_recent_year$internet_percent, na.rm = TRUE)
+
+# Calculate the average percentage for the last 5 years
+average_percent_last_5_years_internet <- last_5_years %>%
+  group_by(year) %>%
+  summarise(avg_percent = mean(internet_percent, na.rm = TRUE)) %>%
+  summarise(variation = last(avg_percent) - first(avg_percent))
+
+# Identify the country with the highest percentage
+max_percent_country_internet <- most_recent_year %>%
+  filter(internet_percent == max(internet_percent, na.rm = TRUE)) %>%
+  select(country, internet_percent) %>%
+  slice(1)
+
+```
+
+
+```{r}
+country_shapes <- rnaturalearth::ne_countries()
+
+df_shapes <- country_shapes %>% 
+  left_join(df, by= c("adm0_a3" = "country_code"))
+
+df_shapes_2022 <- df_shapes %>% 
+  filter(year == "2022") %>% 
+  mutate(label_cellpercent = paste(country, round(cell_percent, 1), sep = ": ")) 
+
+cell_map <-ggplot(df_shapes_2022) + 
+  geom_sf(aes(fill = cell_percent, text = label_cellpercent)) +
+  scale_fill_gradient(low = "#036ffc", high = "#0320fc", name = "cell_percent") +
+  theme_void()+
+  theme(legend.position = "none")
+
+cell_map_ggplotly <- ggplotly(cell_map, tooltip = "text")
+```
+
+```{r}
+# internet users 
+df_shapes_2020 <- df_shapes %>% 
+  filter(year == "2020") %>% 
+  mutate(label_cellpercent = paste(country, round(internet_percent, 1), sep = ": ")) 
+
+internet_map <-ggplot(df_shapes_2020) + 
+  geom_sf(aes(fill = internet_percent, text = label_cellpercent)) +
+  scale_fill_gradient(low = "#f7e1f7", high = "#49006a", name = "internet_percent") +
+  theme_void()+
+  theme(legend.position = "none")
+
+internet_map_ggplotly <- ggplotly(internet_map, tooltip = "text")
+```
+
+
+```{r}
+# cellulaire vs internet par pays et annee
+graph_inter <- df %>% 
+  ggplot(aes(x = cell_percent, y = internet_percent, color = country, frame = year)) +
+  geom_point() +
+  theme_minimal()
+
+graph_inter_ploty <- ggplotly(graph_inter)
+```
+
+
+```{r}
+# graph % cellu users per continent
+graph_cell <- df %>% 
+  group_by(continent, year) %>% 
+  summarise(aver_cell_percent = mean(cell_percent, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  ggplot(aes(x= year, y= aver_cell_percent, group = continent, colour = continent)) +
+  geom_line() +
+  labs(x = "Year", y = "Average")
+
+graph_cell_plotly <- ggplotly(graph_cell)
+```
+
+
+```{r}
+# graph % internet users per continent
+graph_internet <- df %>% 
+  group_by(continent, year) %>% 
+  summarise(aver_internet_percent = mean(internet_percent, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  ggplot(aes(x= year, y= aver_internet_percent, group = continent, colour = continent)) +
+  geom_line() +
+  labs(x = "Year", y = "Average")
+
+graph_internet_plotly <- ggplotly(graph_internet)
+
+```
+
+
+# Home
+
+## Rows1 {height=35%}
+
+```{r}
+# values_box 1
+# Create the value box
+value_box(
+  title = "Number of mobile phone users",
+  value = format_number(total_cell_users),
+  showcase = bsicons::bs_icon("phone"),
+  p(paste("Country with the most users:", max_cell_users$country)),
+  p(paste("Number of users:", format_number(max_cell_users$cell_total))),
+  theme = value_box_theme(bg="#036ffc")
+)
+```
+
+
+```{r}
+# value_box 2
+
+value_box(
+  title = "Percent cell users",
+  value = paste0(round(average_percent_recent_cell, 1), "%"),
+  showcase = bsicons::bs_icon("phone-flip"),
+  theme = value_box_theme(bg="#0320fc"),
+  p(paste(
+    "Variation over last 5 years: ", round(average_percent_last_5_years$variation, 2), "%")),
+  p(paste("Country with the highest percentage: ", max_percent_country$country, 
+    " (", round(max_percent_country$cell_percent, 2), "%)"))
+)
+```
+
+
+```{r}
+# values_box 3
+# Create the value box
+value_box(
+  title = "Number of internet users",
+  value = format_number(total_internet_users),
+  showcase = bsicons::bs_icon("wifi"),
+  theme = value_box_theme(bg="#cc00cc"),
+  p(paste("Country with the most users:", max_internet_users$country)),
+  p(paste("users : ", format_number(max_internet_users$internet_total)))
+)
+```
+
+
+```{r}
+# value box 4
+value_box(
+  title = "Internet percent users",
+  value = paste0(round(average_percent_recent_internet, 1), "%"),
+  showcase = bsicons::bs_icon("router"),
+  theme = value_box_theme(bg="purple"),
+  p(paste("Variation over last 5 years: ", round(average_percent_last_5_years_internet$variation, 2), "%")),
+  p(paste("Country with the highest percentage: ", max_percent_country_internet$country,
+          " (", round(max_percent_country_internet$internet_percent, 2), "%)"))
+)
+
+```
+
+
+## Rows2 {height=75%}
+
+```{r title = "Mobile cellular subscriptions (per 100 people)"}
+cell_map_ggplotly
+```
+
+```{r title = "Individuals using the Internet (% of population)"}
+internet_map_ggplotly
+```
+
+
+# INDICATORS PER COUNTRY
+
+## 
+
+### {width = 70%}
+
+```{r title = "Evolution of cell phone and internet users by country and by year"}
+graph_inter_ploty
+```
+
+### {width = 30%}
+
+```{r title = "Percentage of mobile users per continent"}
+graph_cell_plotly
+```
+
+```{r title = "Percentage of internet users per continent"}
+graph_internet_plotly
+```
+
+
+# About
+
+
+Development Relevance: The quality of an economy's infrastructure, including power and communications, is an important element in investment decisions for both domestic and foreign investors. Government effort alone is not enough to meet the need for investments in modern infrastructure; public-private partnerships, especially those involving local providers and financiers, are critical for lowering costs and delivering value for money. In telecommunications, competition in the marketplace, along with sound regulation, is lowering costs, improving quality, and easing access to services around the globe. Access to telecommunication services rose on an unprecedented scale over the past two decades. This growth was driven primarily by wireless technologies and liberalization of telecommunications markets, which have enabled faster and less costly network rollout. The International Telecommunication Union (ITU) estimates that there were about 6 billion mobile subscriptions globally in the early 2010s. No technology has ever spread faster around the world. Mobile communications have a particularly important impact in rural areas. The mobility, ease of use, flexible deployment, and relatively low and declining rollout costs of wireless technologies enable them to reach rural populations with low levels of income and literacy. The next billion mobile subscribers will consist mainly of the rural poor. Access is the key to delivering telecommunications services to people. If the service is not affordable to most people, goals of universal usage will not be met. Mobile cellular telephone subscriptions are subscriptions to a public mobile telephone service using cellular technology, which provide access to the public switched telephone network (PSTN) using cellular technology. It includes postpaid and prepaid subscriptions and includes analogue and digital cellular systems. Over the past decade new financing and technology, along with privatization and market liberalization, have spurred dramatic growth in telecommunications in many countries. With the rapid development of mobile telephony and the global expansion of the Internet, information and communication technologies are increasingly recognized as essential tools of development, contributing to global integration and enhancing public sector effectiveness, efficiency, and transparency.
+
+For additional/latest information on sources and country notes, please also refer to: https://www.itu.int/en/ITU-D/Statistics/Pages/stat/default.aspx
+
+Source: International Telecommunication Union (ITU) World Telecommunication/ICT Indicators Database
+
+
